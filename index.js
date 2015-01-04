@@ -5,201 +5,136 @@
 var assert = require('assert'),
     async = require('async'),
     fs = require('fs'),
+    tasks = require('./tasks.js'),
+    TaskQueueRunner = tasks.TaskQueueRunner,
+    TaskQueue = tasks.TaskQueue,
+    Task = tasks.Task,
     util = require('util');
 
-function TaskQueue(context, queue) {
-    this.context = context;
-    this.queue = queue;
-    this.index = 0;
-    this.finished = false;
-}
 
-TaskQueue.prototype.run = function (callback) {
-    var that = this;
-
-    if (this.queue.length <= this.index) {
-        console.log('TaskQueue with context %s is done.', this.context.name);
-        this.finished = true;
-        return callback();
-    }
-
-    var task = this.queue[this.index];
-
-    console.log('Handle task %s for object %s. Done: %s Finished: %s', task._id, this.context.name, task._done, task._finished);
-
-    if (!task.isDone()) {
-        this.queue[this.index].do(this.context, callback);
-        return;
-    }
-
-    if (!task.isFinished()) {
-        task.check(this.context, function (finished) {
-            console.log('task check resulted in %s', finished);
-
-            if (finished) {
-                // done and finished
-                ++that.index;
-            }
-
-            callback();
-        });
-        return;
-    }
-
-    // done and finished
-    ++this.index;
-    callback();
-};
-
-function Task(id) {
-    this._id = id;
-    this._done = false;
-    this._finished = false;
-    this._timeout = 10000;
-    this._finishedTimeout = null;
-}
-
-Task.prototype.isDone = function () {
-    return this._done;
-};
-
-Task.prototype.done = function () {
-    this._done = true;
-    this._finishedTimeout = Date.now() + (this._timeout * 1000);
-};
-
-Task.prototype.isFinished = function () {
-    return this._finished;
-};
-
-Task.prototype.do = function (context, callback) {
-    console.log('Default do for %s.', this._id);
-    this.done();
-    callback();
-};
-
-Task.prototype.check = function (context, callback) {
-    console.log('Default check for %s.', this._id);
-    callback(false);
-};
-
-
-// Specialized tasks
-function A() {
-    Task.call(this, 'A');
+// Long running async task (will block the taskrunner for a bit)
+function A(queue) {
+    Task.call(this, queue, 'A');
 }
 util.inherits(A, Task);
 
 A.prototype.do = function (context, callback) {
-    console.log('do A');
-
-    var that = this;
-
-    setTimeout(function () { that._finished = true; }, 10000);
-
-    this.done();
-    callback();
+    setTimeout(function () { callback(true, true); }, 2000);
 };
 
 
-function B() {
-    Task.call(this, 'B');
+// Externally (file) dependent task, will recheck endlessly until file is created again
+function B(queue) {
+    Task.call(this, queue, 'B');
 }
 util.inherits(B, Task);
 
 B.prototype.do = function (context, callback) {
-    console.log('do B');
-
-    this.done();
-    callback();
+    fs.unlink(__dirname + '/forwards', function () {
+        callback(true);
+    });
 };
 
-B.prototype.check = function (context, callback) {
-    console.log('check B');
-
+B.prototype.doCheck = function (context, callback) {
     var that = this;
 
-    fs.exists(__dirname + '/foo', function (exists) {
-        that._finished = exists;
+    fs.exists(__dirname + '/forwards', function (exists) {
         callback(exists);
     });
 };
 
-function C() {
-    Task.call(this, 'C');
-    this.number = 0;
+B.prototype.undo = function (context, callback) {
+    fs.unlink(__dirname + '/backwards', function () {
+        callback(true);
+    });
+};
+
+B.prototype.undoCheck = function (context, callback) {
+    var that = this;
+
+    fs.exists(__dirname + '/backwards', function (exists) {
+        callback(exists);
+    });
+};
+
+
+// task which would needs a state to be saved
+function C(queue) {
+    Task.call(this, queue, 'C');
 }
 util.inherits(C, Task);
 
 C.prototype.do = function (context, callback) {
-    console.log('do C');
+    context.number = Math.floor((Math.random() * 10));
 
-    this.number = (Math.random() * 10).toFixed();
-    this.done();
-    callback();
+    callback(true);
 };
 
-C.prototype.check = function (context, callback) {
-    console.log('check C');
+C.prototype.undo = function (context, callback) {
+    context.number = Math.floor((Math.random() * 10));
 
+    callback(true);
+};
+
+C.prototype.doCheck = function (context, callback) {
     var that = this;
 
-    if (this.number === (Math.random() * 10).toFixed()) {
-        this._finished = true;
+    if (context.number === Math.floor((Math.random() * 10))) {
+        callback(true);
+    } else {
+        callback(false);
     }
-
-    callback();
 };
 
+C.prototype.undoCheck = function (context, callback) {
+    var that = this;
 
+    if (context.number === Math.floor((Math.random() * 10))) {
+        callback(true);
+    } else {
+        callback(false);
+    }
+};
 
+var taskQueueRunner = new TaskQueueRunner(1000);
 
-var taskQueues = [
-    new TaskQueue({ name: 'apple' }, [
-        new A(),
-        new C(),
-        new B()
-    ]),
-    new TaskQueue({ name: 'banana' }, [
-        new C(),
-        new B(),
-        new A()
-    ]),
-    new TaskQueue({ name: 'strawberry' }, [
-        new A(),
-        new B(),
-        new C()
-    ])
-];
-var newTaskQueues = [];
+taskQueueRunner.registerTask('A', A);
+taskQueueRunner.registerTask('B', B);
+taskQueueRunner.registerTask('C', C);
 
-// Task Runner
-function next() {
-    console.log('===================');
-    console.log(' -> Next iteration');
+// Initial task queues
+taskQueueRunner.add(new TaskQueue({ name: 'apple', number: 0 }, [
+    'A',
+    'A',
+    'C',
+    'A',
+    'C',
+    'B'
+]));
 
-    var newList = [];
+taskQueueRunner.add(new TaskQueue({ name: 'banana', number: 0 }, [
+    'C',
+    'B',
+    'C',
+    'C',
+    'A'
+]));
 
-    async.eachSeries(taskQueues, function iterator(taskQueue, callback) {
-        taskQueue.run(function (error) {
-            if (!taskQueue.finished) newList.push(taskQueue);
-            callback(error);
-        });
-    }, function (error) {
-        console.log('Iteration done. Error:', error);
-        console.log('===================');
+taskQueueRunner.add(new TaskQueue({ name: 'berry', number: 0 }, [
+    'A',
+    'A',
+    'A',
+    'B',
+    'C',
+    'C'
+]));
 
-        taskQueues = newList.concat(newTaskQueues);
-        newTaskQueues = [];
-        setTimeout(next, 1000);
-    });
-}
-
-next();
+taskQueueRunner.start();
 
 setTimeout(function () {
-    newTaskQueues.push(new TaskQueue({ name: 'apple' }, [
-        new A(),
-        new B()
+    taskQueueRunner.add(new TaskQueue({ name: 'peach', number: 0 }, [
+        'C',
+        'B',
+        'A'
     ]));
-}, 1000);
+}, 10000);

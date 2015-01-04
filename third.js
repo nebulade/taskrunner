@@ -10,25 +10,37 @@ var assert = require('assert'),
 function taskQueueFromObject(obj) {
     var taskQueue = new TaskQueue(obj.context, obj.tasks);
     taskQueue.index = obj.index;
-    taskQueue.finished = obj.finished;
     taskQueue.taskDone = obj.taskDone;
+    taskQueue.backward = !!obj.backward;
     return taskQueue;
 }
 
 function TaskQueue(context, tasks) {
+    // persistent members
     this.context = context;
     this.tasks = tasks;
     this.index = 0;
-    this.finished = false;
     this.taskDone = false;
+    this.backward = false;
+
+    // runtime members
+    this.queueFinished = false;
 }
+
+TaskQueue.prototype.revert = function () {
+    this.backward = true;
+    this.taskDone = false;
+};
 
 TaskQueue.prototype.run = function (callback) {
     var that = this;
 
-    if (this.tasks.length <= this.index) {
-        console.log('TaskQueue with context %s is done.', this.context.name);
-        this.finished = true;
+    // determine if taskqueue is done
+    if (!this.backward && this.tasks.length <= this.index) {
+        this.queueFinished = true;
+        return callback();
+    } else if (this.backward && this.index < 0) {
+        this.queueFinished = true;
         return callback();
     }
 
@@ -39,34 +51,43 @@ TaskQueue.prototype.run = function (callback) {
     if (taskName === 'B') task = new B(this);
     if (taskName === 'C') task = new C(this);
 
-    console.log('Handle task %s for object %s. Done: %s', task._id, this.context.name, this.taskDone);
+    if (!task) return callback(new Error('No such task'));
 
+    // Print current state
+    var out = this.context.name + '\t\t';
+    this.tasks.forEach(function (t, i) {
+        out += '| ' + t + ' ' + (that.index === i ? (that.backward ? '<' : '>') : ' ') + ' ';
+    });
+    out += '|';
+    console.log(out);
+
+    // proceed to next task in the queue
     function nextTask() {
-        ++that.index;
+        that.index += that.backward ? -1 : 1;
 
-        // reset state
+        // reset task queue state for next task
         that.taskDone = false;
-
-        console.log('Task %s for %s is finished. Move to next one with index %d', task._id, that.context.name, that.index);
 
         callback();
     }
 
-    if (!this.taskDone) {
-        task.do(this.context, function (done, finished) {
-            that.taskDone = done;
-
-            if (finished) nextTask();
-            else callback();
+    // perform the task checks in case the task is done
+    function checkTask() {
+        var check = that.foward ? task.doCheck.bind(task) : task.undoCheck.bind(task);
+        check(that.context, function (finished) {
+            if (finished) return nextTask();
+            callback();
         });
-        return;
     }
 
-    task.check(this.context, function (finished) {
-        console.log('Task %s finished? %s', task._id, finished);
+    if (this.taskDone) return checkTask();
 
-        if (finished) nextTask();
-        else callback();
+    var doUndo = this.foward ? task.do.bind(task) : task.undo.bind(task);
+    doUndo(this.context, function (done, finished) {
+        that.taskDone = done;
+
+        if (finished) return nextTask();
+        checkTask();
     });
 };
 
@@ -80,9 +101,19 @@ Task.prototype.do = function (context, callback) {
     callback(true);
 };
 
-Task.prototype.check = function (context, callback) {
-    console.log('Default check for %s.', this._id);
-    callback(false);
+Task.prototype.undo = function (context, callback) {
+    console.log('Default undo for %s.', this._id);
+    callback(true);
+};
+
+Task.prototype.doCheck = function (context, callback) {
+    console.log('Default doCheck for %s.', this._id);
+    callback(true);
+};
+
+Task.prototype.undoCheck = function (context, callback) {
+    console.log('Default undoCheck for %s.', this._id);
+    callback(true);
 };
 
 
@@ -94,7 +125,6 @@ function A(queue) {
 util.inherits(A, Task);
 
 A.prototype.do = function (context, callback) {
-    console.log('do A');
     setTimeout(function () { callback(true, true); }, 2000);
 };
 
@@ -106,20 +136,29 @@ function B(queue) {
 util.inherits(B, Task);
 
 B.prototype.do = function (context, callback) {
-    console.log('do B');
-
-    fs.unlink(__dirname + '/foo', function () {
+    fs.unlink(__dirname + '/forwards', function () {
         callback(true);
     });
 };
 
-B.prototype.check = function (context, callback) {
-    console.log('check B');
-
+B.prototype.doCheck = function (context, callback) {
     var that = this;
 
-    fs.exists(__dirname + '/foo', function (exists) {
-        that._queue.taskFinished = exists;
+    fs.exists(__dirname + '/forwards', function (exists) {
+        callback(exists);
+    });
+};
+
+B.prototype.undo = function (context, callback) {
+    fs.unlink(__dirname + '/backwards', function () {
+        callback(true);
+    });
+};
+
+B.prototype.undoCheck = function (context, callback) {
+    var that = this;
+
+    fs.exists(__dirname + '/backwards', function (exists) {
         callback(exists);
     });
 };
@@ -132,16 +171,28 @@ function C(queue) {
 util.inherits(C, Task);
 
 C.prototype.do = function (context, callback) {
-    console.log('do C');
-
     context.number = (Math.random() * 10).toFixed();
 
     callback(true);
 };
 
-C.prototype.check = function (context, callback) {
-    console.log('check C');
+C.prototype.undo = function (context, callback) {
+    context.number = (Math.random() * 10).toFixed();
 
+    callback(true);
+};
+
+C.prototype.doCheck = function (context, callback) {
+    var that = this;
+
+    if (context.number === (Math.random() * 10).toFixed()) {
+        callback(true);
+    } else {
+        callback(false);
+    }
+};
+
+C.prototype.undoCheck = function (context, callback) {
     var that = this;
 
     if (context.number === (Math.random() * 10).toFixed()) {
@@ -173,7 +224,8 @@ var newTaskQueues = [];
 
 // Task Runner
 function next() {
-    console.log('===================');
+    console.log();
+    console.log('======================================');
     console.log(' -> Next iteration');
 
     var newList = [];
@@ -181,13 +233,18 @@ function next() {
     var taskQueues = loadTaskQueues();
 
     async.eachSeries(taskQueues, function iterator(taskQueue, callback) {
+
+        // randomness to let it go backwards
+        if (!taskQueue.backward && (Math.random() < 0.1)) taskQueue.revert();
+
         taskQueue.run(function (error) {
-            if (!taskQueue.finished) newList.push(taskQueue);
+            if (!taskQueue.queueFinished) newList.push(taskQueue);
             callback(error);
         });
     }, function (error) {
-        console.log('Iteration done. Error:', error);
-        console.log('===================');
+        console.log('Iteration done');
+        console.log('======================================');
+        console.log();
 
         saveTaskQueues(newList.concat(newTaskQueues));
         newTaskQueues = [];
@@ -200,17 +257,25 @@ function next() {
 saveTaskQueues([
     new TaskQueue({ name: 'apple', number: 0 }, [
         'A',
+        'A',
+        'C',
+        'A',
         'C',
         'B'
     ]),
     new TaskQueue({ name: 'banana', number: 0 }, [
         'C',
         'B',
+        'C',
+        'C',
         'A'
     ]),
-    new TaskQueue({ name: 'strawberry', number: 0 }, [
+    new TaskQueue({ name: 'berry', number: 0 }, [
+        'A',
+        'A',
         'A',
         'B',
+        'C',
         'C'
     ])
 ]);
