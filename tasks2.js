@@ -110,9 +110,8 @@ TaskQueue.prototype.run = function (callback) {
     });
 };
 
-function Task(queue, id) {
+function Task(id) {
     this._id = id;
-    this._queue = queue;
 }
 
 Task.prototype.do = function (context, callback) {

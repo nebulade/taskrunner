@@ -7,14 +7,13 @@ var assert = require('assert'),
     fs = require('fs'),
     tasks = require('./tasks2.js'),
     TaskQueueRunner = tasks.TaskQueueRunner,
-    TaskQueue = tasks.TaskQueue,
     Task = tasks.Task,
     util = require('util');
 
 
 // Long running async task (will block the taskrunner for a bit)
-function A(queue) {
-    Task.call(this, queue, 'A');
+function A() {
+    Task.call(this, 'A');
 }
 util.inherits(A, Task);
 
@@ -24,8 +23,8 @@ A.prototype.do = function (context, callback) {
 
 
 // Externally (file) dependent task, will recheck endlessly until file is created again
-function B(queue) {
-    Task.call(this, queue, 'B');
+function B() {
+    Task.call(this, 'B');
 }
 util.inherits(B, Task);
 
@@ -59,8 +58,8 @@ B.prototype.undoCheck = function (context, callback) {
 
 
 // task which would needs a state to be saved
-function C(queue) {
-    Task.call(this, queue, 'C');
+function C() {
+    Task.call(this, 'C');
 }
 util.inherits(C, Task);
 
@@ -130,11 +129,3 @@ taskQueueRunner.add('QB', { name: 'banana', number: 0 });
 taskQueueRunner.add('QC', { name: 'coco', number: 0 });
 
 taskQueueRunner.start();
-
-// setTimeout(function () {
-//     taskQueueRunner.add(new TaskQueue({ name: 'peach', number: 0 }, [
-//         new C(),
-//         new B(),
-//         new A()
-//     ]));
-// }, 10000);
