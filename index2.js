@@ -5,7 +5,7 @@
 var assert = require('assert'),
     async = require('async'),
     fs = require('fs'),
-    tasks = require('./tasks.js'),
+    tasks = require('./tasks2.js'),
     TaskQueueRunner = tasks.TaskQueueRunner,
     TaskQueue = tasks.TaskQueue,
     Task = tasks.Task,
@@ -98,11 +98,7 @@ C.prototype.undoCheck = function (context, callback) {
 
 var taskQueueRunner = new TaskQueueRunner(1000);
 
-taskQueueRunner.registerTask('A', A);
-taskQueueRunner.registerTask('B', B);
-taskQueueRunner.registerTask('C', C);
-
-var taskQueueA = new TaskQueue('QA', [
+taskQueueRunner.registerTaskQueue('QA', [
     new A(),
     new A(),
     new C(),
@@ -111,32 +107,34 @@ var taskQueueA = new TaskQueue('QA', [
     new B()
 ]);
 
-// Initial task queues
-taskQueueRunner.add(taskQueueA, { name: 'apple', number: 0 });
-
-taskQueueRunner.add(new TaskQueue({ name: 'banana', number: 0 }, [
+taskQueueRunner.registerTaskQueue('QB', [
     new C(),
     new B(),
     new C(),
     new C(),
     new A()
-]));
+]);
 
-taskQueueRunner.add(new TaskQueue({ name: 'berry', number: 0 }, [
+taskQueueRunner.registerTaskQueue('QC', [
     new A(),
     new A(),
     new A(),
     new B(),
     new C(),
     new C()
-]));
+]);
+
+// Initial task queues
+taskQueueRunner.add('QA', { name: 'apple', number: 0 });
+taskQueueRunner.add('QB', { name: 'banana', number: 0 });
+taskQueueRunner.add('QC', { name: 'coco', number: 0 });
 
 taskQueueRunner.start();
 
-setTimeout(function () {
-    taskQueueRunner.add(new TaskQueue({ name: 'peach', number: 0 }, [
-        new C(),
-        new B(),
-        new A()
-    ]));
-}, 10000);
+// setTimeout(function () {
+//     taskQueueRunner.add(new TaskQueue({ name: 'peach', number: 0 }, [
+//         new C(),
+//         new B(),
+//         new A()
+//     ]));
+// }, 10000);
